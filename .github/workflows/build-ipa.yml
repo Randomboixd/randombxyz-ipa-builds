@@ -1,0 +1,117 @@
+name: build-ipa
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          brew install --quiet age xcodegen
+          xcodebuild -version
+
+      - name: Decrypt source
+        env:
+          AGE_KEY: ${{ secrets.IPA_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          blob=$(find src -name '*.age' -type f | head -n 1)
+          if [ -z "$blob" ]; then echo "no .age blob under src/"; exit 1; fi
+          echo "decrypting $blob"
+          umask 077
+          printf '%s\n' "$AGE_KEY" > "$RUNNER_TEMP/age.key"
+          age -d -i "$RUNNER_TEMP/age.key" -o "$RUNNER_TEMP/src.tar.gz" "$blob"
+          rm -f "$RUNNER_TEMP/age.key"
+          mkdir -p work
+          tar -xzf "$RUNNER_TEMP/src.tar.gz" -C work
+          rm -f "$RUNNER_TEMP/src.tar.gz"
+          ls -la work
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          cd work
+          if [ -f project.yml ]; then xcodegen generate; fi
+          ls -d *.xcodeproj
+
+      - name: Build unsigned .app
+        run: |
+          set -euo pipefail
+          cd work
+          proj=$(ls -d *.xcodeproj | head -n 1)
+          scheme=$(basename "$proj" .xcodeproj)
+          xcodebuild \
+            -project "$proj" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: Package .ipa
+        run: |
+          set -euo pipefail
+          app=$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -n 1)
+          if [ -z "$app" ]; then echo "no .app produced"; exit 1; fi
+          name=$(basename "$app" .app)
+          mkdir -p "$RUNNER_TEMP/pkg/Payload"
+          cp -R "$app" "$RUNNER_TEMP/pkg/Payload/"
+          cd "$RUNNER_TEMP/pkg"
+          zip -qry "$RUNNER_TEMP/${name}.ipa" Payload
+          ls -lh "$RUNNER_TEMP/${name}.ipa"
+          echo "IPA=$RUNNER_TEMP/${name}.ipa" >> "$GITHUB_ENV"
+          echo "APP_NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: ${{ env.IPA }}
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Simulator screenshot (best effort)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cd work
+          proj=$(ls -d *.xcodeproj | head -n 1)
+          scheme=$(basename "$proj" .xcodeproj)
+          device=$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(sorted([x["udid"] for r in d for x in d[r] if "iPhone" in x["name"]])[0])')
+          echo "sim $device"
+          xcodebuild -project "$proj" -scheme "$scheme" -configuration Debug \
+            -sdk iphonesimulator -destination "id=$device" \
+            -derivedDataPath "$RUNNER_TEMP/sim" \
+            CODE_SIGNING_ALLOWED=NO build
+          xcrun simctl boot "$device" || true
+          sleep 5
+          app=$(find "$RUNNER_TEMP/sim/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -n 1)
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          xcrun simctl install "$device" "$app"
+          xcrun simctl launch "$device" "$bundle" || true
+          sleep 6
+          xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shot.png"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/shot.png
+          retention-days: 1
+          if-no-files-found: ignore
