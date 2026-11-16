@@ -2,6 +2,11 @@ name: build-ipa
 
 on:
   workflow_dispatch:
+    inputs:
+      blob:
+        description: "src/*.age to build (empty = newest)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -24,8 +29,9 @@ jobs:
           AGE_KEY: ${{ secrets.IPA_AGE_KEY }}
         run: |
           set -euo pipefail
-          blob=$(find src -name '*.age' -type f | head -n 1)
-          if [ -z "$blob" ]; then echo "no .age blob under src/"; exit 1; fi
+          blob="${{ inputs.blob }}"
+          if [ -n "$blob" ]; then blob="src/$blob"; else blob=$(ls -t src/*.age | head -n 1); fi
+          if [ ! -f "$blob" ]; then echo "no matching .age blob under src/"; exit 1; fi
           echo "decrypting $blob"
           umask 077
           printf '%s\n' "$AGE_KEY" > "$RUNNER_TEMP/age.key"
