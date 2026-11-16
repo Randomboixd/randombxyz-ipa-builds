@@ -109,7 +109,7 @@ jobs:
           app=$(find "$RUNNER_TEMP/sim/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -n 1)
           bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
           xcrun simctl install "$device" "$app"
-          xcrun simctl launch "$device" "$bundle" || true
+          xcrun simctl launch "$device" "$bundle" -anyagok || true
           sleep 6
           xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shot.png"
 
