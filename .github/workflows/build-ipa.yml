@@ -113,8 +113,15 @@ jobs:
           app=$(find "$RUNNER_TEMP/sim/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -n 1)
           bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
           xcrun simctl install "$device" "$app"
+          # 1) first launch: whatever greets a fresh install (e.g. the disclaimer)
           xcrun simctl launch "$device" "$bundle" ${{ inputs.simarg }} || true
-          sleep 6
+          sleep 7
+          xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shot-1-first-launch.png"
+          # 2) relaunch with the disclaimer pre-accepted, so the tab itself is visible
+          xcrun simctl terminate "$device" "$bundle" || true
+          sleep 2
+          xcrun simctl launch "$device" "$bundle" -skipdisclaimer ${{ inputs.simarg }} || true
+          sleep 7
           xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shot.png"
 
       - name: Upload screenshots
@@ -122,6 +129,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: screenshots
-          path: ${{ runner.temp }}/shot.png
+          path: ${{ runner.temp }}/shot*.png
           retention-days: 1
           if-no-files-found: ignore
